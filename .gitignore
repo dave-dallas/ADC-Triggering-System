@@ -1,0 +1,6 @@
+desktop.ini
+/Arduino/build/**
+/kiCad/**
+/Part Datasheets/**
+/Part Models, Schematics, CAD, etc/**
+/Quench Signal Capture/**
