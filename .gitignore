@@ -1,5 +1,6 @@
 desktop.ini
 /Arduino/build/**
+/build/**
 /kiCad/**
 /Part Datasheets/**
 /Part Models, Schematics, CAD, etc/**
