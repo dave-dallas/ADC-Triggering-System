@@ -87,7 +87,6 @@ NOTES:
 // Serial (baud 115200 usually common, but 250000 seems stable )
   #define SERIAL_BAUD 250000
 // SPI (baud theoretically > 20MHz on ADC, and 80MHz periph clock on ESP32-S3)
-// For some reason setting 80MHz is more stable than 20MHz (causes errors)
   #define SPI_BAUD 20000000
 // DIC & Gleeble Defines:
   #define TRIGGER_PIN 9 // normally 2
@@ -102,12 +101,12 @@ NOTES:
   #define ADC_NOT_CS SS  // adc_pin=13,   arduino_pin=10,   SS/CS, ACTIVE LOW
   #define ADC_DOUTA MISO // adc_pin=24,   arduino_pin=12,   MISO/CIPO
   #define ADC_SCLK SCK   // adc_pin=12,   arduino_pin=13,   SCK, ACTIVE LOW
-  #if 0
+#if 0
   #define ADC_STBY xx    // adc_pin=7,    hardwired high,    standby if low
-  #endif
+#endif
 // GLOBAL VARIABLES ----------------------------------------------------------|
 // CSV Seperator
-  char csv_sep[] = "\t";  // or ","; and can use string as well
+  char csv_sep[] = ",";  // or ","; and can use string type as well as char
 // Serial
   bool timingDataRecieved = false;
 
@@ -160,10 +159,10 @@ NOTES:
     float ch2_volts = 0;  // 
     float ch3_volts = 0;  // 
     float ch4_volts = 0;  //    
-    //volatile bool data_ready = 0;               // adc conversion completed and data waiting
-    //bool data_retrieved = 0;                    // adc data fetched using spi
-    //bool data_sent = 0;                         // adc data transmitted over serial
-  } adc;                                        // struct to hold adc data
+    //volatile bool data_ready = 0;              // adc conversion completed and data waiting
+    //bool data_retrieved = 0;                   // adc data fetched using spi
+    //bool data_sent = 0;                        // adc data transmitted over serial
+  } adc;                                         // struct to hold adc data
   volatile struct dataBlock *adcPointer = &adc;  // NOTE BEHAVIOR OF SCOPE
 
 // Debouncing buttons and inputs
@@ -240,6 +239,7 @@ NOTES:
   String data_string;
 
 // Workarounds
+  uint32_t missed_interrupts = 0;
   static bool paused_printed = false;  // TODO: Move or eliminate
   static bool paused_flag = false;  // TODO: Move or eliminate
 
@@ -517,6 +517,8 @@ void loop()
       Serial.print("Total test run time was: ");
       Serial.print(test_end_time);
       Serial.print(" milliseconds\n");
+      Serial.print(missed_interrupts);
+      Serial.print(" missed interrupts from ADC_BUSY PIN.\n");
       Run_State = Shut_Down;
       break;
     case Shut_Down:
@@ -587,27 +589,32 @@ void loop()
   // TODO: Add checks to drop adc data if reaching limits or notify of misses
   //       Dropping could be done by changing the interrupt loop counters
 
-  // If adc data is available fetch it and send over serial
+  // If adc data is available fetch it and send over serial,
+  // TODO: Currently the interrupt on ADC_BUSY is missing the falling edge,
+  // so a backup check has been implemented and ensuing functions duplicated
   if (adc_data_ready)
   {
     adc_data_ready = false;
     adc_fetch_data();
+    adc_map_volts();  // This added in for convenience; TODO: move
     data_delta--;  // decriment before send means value should be zero
     print_csv_data();
-    //adc_print_values();
-    //adc_write_values();
-    //adc_reset_values();  // ONLY FOR DEBUG
-    //Serial.printf("Data Delta = %d\n", data_delta);
     // Pulling CONVST low will allow triggering of next sample
     // Can be done in isr, after spi fetch or after serial send (safest)
     digitalWrite(ADC_CONVST, LOW);
   } 
-
-  if (digitalRead(ADC_CONVST) && !digitalRead(ADC_BUSY))
+  else if (digitalRead(ADC_CONVST) && !digitalRead(ADC_BUSY))
   {
+    adc_data_ready = false;
+    adc_fetch_data();
+    adc_map_volts();  // This added in for convenience; TODO: move
+    data_delta--;  // decriment before send means value should be zero
+    print_csv_data();
     // the stupid interrupt has missed the falling edge
-    adc_data_ready = true;
-    Serial.println();
+    missed_interrupts++;
+    // Pulling CONVST low will allow triggering of next sample
+    // Can be done in isr, after spi fetch or after serial send (safest)
+    digitalWrite(ADC_CONVST, LOW);
   } 
 
 } // end of loop()
@@ -793,22 +800,22 @@ Remember to omit unneeded trailing/leading spaces in csv formatting.
   Serial.print(csv_sep);
   Serial.print("fps_change_time");
   Serial.print(csv_sep);
-  Serial.print("fps_change_pin.history");
-  Serial.print(csv_sep);
-  Serial.print("adc.ch1");
-  Serial.print(csv_sep);
+  // Serial.print("fps_change_pin.history");
+  // Serial.print(csv_sep);
+  // Serial.print("adc.ch1");
+  // Serial.print(csv_sep);
   Serial.print("adc.ch1_volts");
   Serial.print(csv_sep);
-  Serial.print("adc.ch2");
-  Serial.print(csv_sep);
+  // Serial.print("adc.ch2");
+  // Serial.print(csv_sep);
   Serial.print("adc.ch2_volts");
   Serial.print(csv_sep);
-  Serial.print("adc.ch3");
-  Serial.print(csv_sep);
+  // Serial.print("adc.ch3");
+  // Serial.print(csv_sep);
   Serial.print("adc.ch3_volts");
   Serial.print(csv_sep);
-  Serial.print("adc.ch4");
-  Serial.print(csv_sep);
+  // Serial.print("adc.ch4");
+  // Serial.print(csv_sep);
   Serial.print("adc.ch4_volts");
   Serial.print(csv_sep);
   Serial.print("data_delta");  
@@ -839,24 +846,23 @@ void print_csv_data(void)
   Serial.print(csv_sep);
   Serial.print(fps_change_time);          // 20 chars max (norm >8 chars)
   Serial.print(csv_sep);
-  Serial.print(fps_change_pin.history);   // 3 chars
+  // Serial.print(fps_change_pin.history);   // 3 chars
+  // Serial.print(csv_sep);
+  // Serial.print(adc.ch1);                  // 5 chars
+  // Serial.print(csv_sep);
+  Serial.print(adc.ch1_volts, 4);                  // 
   Serial.print(csv_sep);
-  adc_map_volts();  // This added in for convenience; TODO: move
-  Serial.print(adc.ch1);                  // 5 chars
+  // Serial.print(adc.ch2);                  // 5 chars
+  // Serial.print(csv_sep);
+  Serial.print(adc.ch2_volts, 4);                  // 
   Serial.print(csv_sep);
-  Serial.print(adc.ch1_volts, 3);                  // 
+  // Serial.print(adc.ch3);                  // 5 chars
+  // Serial.print(csv_sep);
+  Serial.print(adc.ch3_volts, 4);                  // 
   Serial.print(csv_sep);
-  Serial.print(adc.ch2);                  // 5 chars
-  Serial.print(csv_sep);
-  Serial.print(adc.ch2_volts, 3);                  // 
-  Serial.print(csv_sep);
-  Serial.print(adc.ch3);                  // 5 chars
-  Serial.print(csv_sep);
-  Serial.print(adc.ch3_volts, 3);                  // 
-  Serial.print(csv_sep);
-  Serial.print(adc.ch4);                  // 5 chars
-  Serial.print(csv_sep);
-  Serial.print(adc.ch4_volts, 3);                  // 
+  // Serial.print(adc.ch4);                  // 5 chars
+  // Serial.print(csv_sep);
+  Serial.print(adc.ch4_volts, 4);                  // 
   Serial.print(csv_sep);
   Serial.print(data_delta);               // 11 chars max
   Serial.print("\n");                     // 1 char LF
@@ -1009,16 +1015,16 @@ void adc_print_values(void)
   Serial.println("ADC Readings: ");
   Serial.print(adc.ch1);
   Serial.print(",\tmV:");
-  Serial.println(map(adc.ch1, -32768, 32767, -10000, +10000));
+  Serial.println(map(adc.ch1, -32768, 32768, -10000, +10000));
   Serial.print(adc.ch2);
   Serial.print(",\tmV:");
-  Serial.println(map(adc.ch2, -32768, 32767, -10000, +10000));
+  Serial.println(map(adc.ch2, -32768, 32768, -10000, +10000));
   Serial.print(adc.ch3);
   Serial.print(",\tmV:");
-  Serial.println(map(adc.ch3, -32768, 32767, -10000, +10000));
+  Serial.println(map(adc.ch3, -32768, 32768, -10000, +10000));
   Serial.print(adc.ch4);
   Serial.print(",\tmV:");
-  Serial.println(map(adc.ch4, -32768, 32767, -10000, +10000));
+  Serial.println(map(adc.ch4, -32768, 32768, -10000, +10000));
   // Serial.println();
 } // end adc_print_values()
 
@@ -1031,19 +1037,19 @@ void adc_write_values(void)
   // Serial.write("\n");
   Serial.write(adc.ch1);
   // Serial.write(",\tmV:");
-  // Serial.write(map(adc.ch1, -32768, 32767, -10000, +10000));
+  // Serial.write(map(adc.ch1, -32768, 32768, -10000, +10000));
   // Serial.write("\n");
   Serial.write(adc.ch2);
   // Serial.write(",\tmV:");
-  // Serial.write(map(adc.ch2, -32768, 32767, -10000, +10000));
+  // Serial.write(map(adc.ch2, -32768, 32768, -10000, +10000));
   // Serial.write("\n");
   Serial.write(adc.ch3);
   // Serial.write(",\tmV:");
-  // Serial.write(map(adc.ch3, -32768, 32767, -10000, +10000));
+  // Serial.write(map(adc.ch3, -32768, 32768, -10000, +10000));
   // Serial.write("\n");
   Serial.write(adc.ch4);
   //Serial.write(",\tmV:");
-  //Serial.write(map(adc.ch4, -32768, 32767, -10000, +10000));
+  //Serial.write(map(adc.ch4, -32768, 32768, -10000, +10000));
   Serial.write("\n");
 } // end adc_write_values()
 
