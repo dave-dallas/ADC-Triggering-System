@@ -1,7 +1,0 @@
-{
-    "sketch": "Arduino\\esp32_ADC_Triggering_System\\esp32_ADC_Triggering_System.ino",
-    "configuration": "PartitionScheme=default,PinNumbers=default,USBMode=default",
-    "board": "arduino:esp32:nano_nora",
-    "output": "../build",
-    "port": "COM7"
-}
