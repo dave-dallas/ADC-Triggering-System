@@ -5,3 +5,4 @@ desktop.ini
 /Part Datasheets/**
 /Part Models, Schematics, CAD, etc/**
 /Quench Signal Capture/**
+.vscode/**

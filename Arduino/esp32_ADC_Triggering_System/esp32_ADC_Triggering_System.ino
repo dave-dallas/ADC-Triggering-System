@@ -112,7 +112,7 @@ NOTES:
 
 // Camera Trigger Timer
   hw_timer_t *trigger_timer = NULL;  // pointer to hardware timer struct
-  volatile uint8_t isr_loop_count = 0;         // counter for ISR
+  volatile uint8_t isr_loop_count = 0;  // counter for ISR
   uint64_t default_trigger_interval = 100000;  //  delay in microsec; 10 fps
   // User set trigger timer values in milliseconds; 24 elements;
   uint64_t timer_values_millis[] = {  0, 1000, 0, 1000, 250, 100, 50, 30,
@@ -227,8 +227,8 @@ NOTES:
   // enum colour_enum RGB_Colour = Black;
 
 // Various counters for camera and adc data
-  uint32_t trigger_frame_count = 0;
-  uint32_t adc_frame_count = 0;
+  uint32_t trigger_frame_count = 0xFFFFFFFF; // -1 for zero indexing
+  uint32_t adc_frame_count = 0xFFFFFFFF; // -1 for zero indexing
   int32_t data_delta = 0;  // difference between data triggered and sent
 
 // Calibration mode
@@ -398,6 +398,10 @@ void loop()
       timerWrite(run_timer, 0);
       // Reset fps change count just in case...
       fps_change_count = 0u;  
+      // Reset values to force zero indexing of frame counters
+      trigger_frame_count = 0xFFFFFFFF;  // -1 to work around zero indexing issue
+      adc_frame_count = 0xFFFFFFFF;  // -1 to work around zero indexing issue
+      isr_loop_count = 0u;  // still want this as zero when isr manually called in starting
       // Test for the extreme case where user wants to start the test timer 
       // but not trigger the cameras or adc, then
       // Preload 1st timer alarm value (fps at index 0 always 0)
@@ -413,7 +417,7 @@ void loop()
       Serial.println("Waiting for FPS Change Pin or Red Button to start test");
       Serial.println("CSV_BEGIN");
       print_csv_header();
-      print_csv_data();
+      //print_csv_data();
       // Can't stay in or loop back to Prestart state      
       Run_State = Prestart_Pause;
       break;
@@ -437,11 +441,12 @@ void loop()
       break;
 
     case Starting:
-      // Zero values in alarm timer already checked for in pretest, so
+      trigger_timer_ISR();  // manually call to trigger first frame
+      // Zero values in alarm timer already checked for in pretest, so,
       // Start all timers
       timerStart(run_timer);
       timerStart(trigger_timer);
-      // TODO:Ggrab time from system timer. Needs config
+      // TODO:Grab ntp time from system timer. Needs config
       // start_time = something involving gettimeofday() etc;
       rgb_write(Green);
       Run_State = Running;
