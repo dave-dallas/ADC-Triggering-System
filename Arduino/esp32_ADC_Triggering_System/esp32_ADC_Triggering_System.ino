@@ -74,6 +74,13 @@ NOTES:
 
   TLDR: Ensure the documentation versions match the api versions installed.
 
+
+  DEBOUNCING:
+  Idea courtesy Ganssle Group. Called from a 5ms timer,
+  the debounced state only ever changes when the pin
+  has been stable for 40ms. Initialize debounced_state
+  to whatever is  "inactive" for the system (HIGH or LOW)
+
 */
 
 #if 0
@@ -97,16 +104,24 @@ NOTES:
   #define ADC_BUSY 4     // adc_pin=14,   arduino_pin=4
   #define ADC_FRSTDATA 5 // adc_pin=15,   arduino_pin=5
   #define ADC_RESET 3    // adc_pin=11,   arduino_pin=8
-  #define ADC_CONVST 2   // adc_pin=9&10, arduino_pin=9,    CONVSTA/CONVSTB tied
-  #define ADC_NOT_CS SS  // adc_pin=13,   arduino_pin=10,   SS/CS, ACTIVE LOW
-  #define ADC_DOUTA MISO // adc_pin=24,   arduino_pin=12,   MISO/CIPO
-  #define ADC_SCLK SCK   // adc_pin=12,   arduino_pin=13,   SCK, ACTIVE LOW
+  #define ADC_CONVST 2   // adc_pin=9&10, arduino_pin=9,   CONVSTA/CONVSTB tied
+  #define ADC_NOT_CS SS  // adc_pin=13,   arduino_pin=10,  SS/CS, ACTIVE LOW
+  #define ADC_DOUTA MISO // adc_pin=24,   arduino_pin=12,  MISO/CIPO
+  #define ADC_SCLK SCK   // adc_pin=12,   arduino_pin=13,  SCK, ACTIVE LOW
+  // MOSI (Arduino Pin 11) and DOUTB (adc pin 25) not used and left unconnected
 #if 0
-  #define ADC_STBY xx    // adc_pin=7,    hardwired high,    standby if low
+  #define ADC_STBY xx    // adc_pin=7,    hardwired high,  standby if low
 #endif
+
 // GLOBAL VARIABLES ----------------------------------------------------------|
-// CSV Seperator
+
+// CSV file seperator character
   char csv_sep[] = ",";  // or ","; and can use string type as well as char
+
+// Unused pins to be set to input pullup (see function notes below)
+  int unusedPins[] = {17, 18, 19, 20}; // Pins A0-A3 unused  
+  int numberOfUnusedPins = sizeof(unusedPins) / sizeof(unusedPins[0]);
+
 // Serial
   bool timingDataRecieved = false;
 
@@ -122,17 +137,15 @@ NOTES:
    // Matches the number of elements set as defaults in timer_values_millis[]
   uint8_t DEFAULT_TIMER_ELEMENTS = 8; 
   // Trigger Timer values in microseconds; 24 elements;
-  // - NEED BOUNDS CHECK OR i++ CRASHES OS!
-  // - CANNOT WRITE ZERO OR TIMER CRASHES OS!
+  // - NB: Need Bounds Check Or I++ Crashes OS!
+  // - NB: Cannot Write Zero Or Timer Crashes OS!
   uint64_t trigger_timer_values[] = { 0, 0, 0, 0, 0, 0, 0, 0,
                                       0, 0, 0, 0, 0, 0, 0, 0,
                                       0, 0, 0, 0, 0, 0, 0, 0
                                     };  // 24 elements
   uint8_t timer_elements_set = 0;
   const uint8_t TIMER_ELEMENTS_MAX = 24;
-  //uint8_t timer_array_index = 0;  // TODO: COMBINE THESE
   uint8_t fps_change_count = 0;  // acts as index for trigger timing array
-  volatile bool timer_flag = false;  // TODO: REMOVE [used in old adc_test_loop()]
 
 // Run Timer
   hw_timer_t *run_timer = NULL;  // pointer to hardware timer struct
@@ -148,7 +161,8 @@ NOTES:
   // ie total debounce period = 5 * 8 = 40 millisec
 
 // ADC Variables
-  volatile bool adc_data_ready = false;  // TODO: duplicated entry in struct
+  volatile bool adc_data_ready = false;  // adc conversion data waiting
+  // Struct to hold adc data
   volatile struct dataBlock
   {
     int16_t ch1 = 0;  // -32768
@@ -159,29 +173,24 @@ NOTES:
     float ch2_volts = 0;  // 
     float ch3_volts = 0;  // 
     float ch4_volts = 0;  //    
-    //volatile bool data_ready = 0;              // adc conversion completed and data waiting
-    //bool data_retrieved = 0;                   // adc data fetched using spi
-    //bool data_sent = 0;                        // adc data transmitted over serial
-  } adc;                                         // struct to hold adc data
-  volatile struct dataBlock *adcPointer = &adc;  // NOTE BEHAVIOR OF SCOPE
+  } adc;  
+  // Pointer to adc dataBlock
+  //volatile struct dataBlock *adcPointer = &adc;  // NOTE BEHAVIOR OF SCOPE
 
-// Debouncing buttons and inputs
+// Struct to hold debouncing buttons and input info
   struct Debounce
   {
     const uint8_t PIN_MODE;  // not used; a reminder; pads struct to 32bit
     const uint8_t TRIGGER;
     volatile uint8_t history;
     volatile bool activated;  // bool = 1 byte or 8 bits
-    //volatile bool state;
-    // bool lastState;
-    //const uint8_t PIN;  // not used; a reminder; pads struct to 32bit
-    // const bool IS_PULLUP;
-    // uint32_t activations;
   };
 
+  // Create structs for pins needing debouncing
   Debounce fps_change_pin = {INPUT, 0x7fu, 0x00u, false};
-  Debounce red_button = {INPUT, 0x7fu, 0x00u, false};  // INPUT_PULLUP, 0x80u, 0xffu, false
-  Debounce white_button = {INPUT, 0x7fu, 0x00u, false};  // INPUT_PULLUP, 0x80u, 0xffu, false
+  Debounce red_button = {INPUT, 0x7fu, 0x00u, false};
+  Debounce white_button = {INPUT, 0x7fu, 0x00u, false};  
+  // example_pin_set_to_input_pullup = {INPUT_PULLUP, 0x80u, 0xffu, false}
 
 // Test run states and variables
   enum state_t
@@ -235,13 +244,8 @@ NOTES:
   const uint32_t number_of_calibration_images = 10;
   const uint32_t calibration_frame_delay = 2000;  // in millis
 
-// Strings
-  String data_string;
-
-// Workarounds
+// Hacks and Workarounds
   uint32_t missed_interrupts = 0;
-  static bool paused_printed = false;  // TODO: Move or eliminate
-  static bool paused_flag = false;  // TODO: Move or eliminate
 
 
 // FUNCTION DECLARATIONS -----------------------------------------------------|
@@ -249,20 +253,12 @@ NOTES:
   void ARDUINO_ISR_ATTR adc_data_ready_ISR(void);
   void ARDUINO_ISR_ATTR debounce_timer_ISR(void);
 
-  void printed_delay(void);                   // somewhat unnecessary in final version
-  void serial_setup(bool driver_reset_delay);  // somewhat unnecessary in final version
   void adc_setup(void);
-  void trigger_timer_setup(void);  // TODO: omit in final
-  void adc_capture(void);  // TODO: probably no longer necessary?
   void adc_fetch_data(void);
-  void adc_reset_values(void);
-  void adc_test_loop(void);  // TODO: omit in final
   void rgb_setup(void);
   void rgb_test(int loops);
   void rgb_write(colour_enum Colour);
   void run_calibration(void);
-  void adc_print_values(void);  // ?
-  void adc_write_values(void);  // ?
   void print_csv_header(void);
   void print_csv_data(void);
   void state_prediction(void);
@@ -270,15 +266,14 @@ NOTES:
 
   void wait_for_serial_config(void);
 
-  void my_function(void);  // dummy function
 
 // ARDUINO SETUP FUNCTION ----------------------------------------------------|
 void setup()
 {
+  pullup_pins(unusedPins, numberOfUnusedPins); // set unused pins to input pullup
   rgb_setup();
   rgb_test(1);
   digitalWrite(LED_BLUE, LOW);  // turn on blue led during setup
-  // serial_setup(true);  // Setup Serial Monitor
   Serial.begin(SERIAL_BAUD);  
   delay(3000u);  // allow time for usb driver to reset
   Serial.println("Hello World!");
@@ -317,14 +312,12 @@ void setup()
   //attachInterrupt(digitalPinToInterrupt(ADC_BUSY), adc_data_ready_ISR, FALLING);
   // Connected to quench signal in Gleeble
   pinMode(FPS_CHANGE_PIN, INPUT);
-  // TODO: check if BUTTONs are INPUT or INPUT_PULLUP
+  // Setup buttons to INPUT_PULLUP
   pinMode(BUTTON_PIN_RED, INPUT_PULLUP);
   pinMode(BUTTON_PIN_WHITE, INPUT_PULLUP);
-
+  // Setup the External ADC
   adc_setup();
-  //adc_print_values();          // print variable initialisation values TODO: remove
-
-
+  // Update led status
   digitalWrite(LED_BLUE, HIGH);  // turn off blue led after setup
 
 } // end of setup()
@@ -468,26 +461,11 @@ void loop()
     case Pausing:
       timerAlarmWrite(trigger_timer, 0xFFFFFFFFFFFFu, true);
       rgb_write(Yellow);
-          #if DEBUG
-          Serial.println("Pausing");
-          paused_printed = false;
-          #endif
       Run_State = Paused;
       break;
 
     case Paused:
       // do nothing
-          #if DEBUG
-          if (!paused_printed)
-          {
-            Serial.print("Paused. Run_State = "); 
-            Serial.print(Run_State);
-            Serial.print(". enum Paused = ");
-            Serial.println(Paused);
-            paused_printed = true;
-          }
-          paused_flag = true;  // flag to catch problems using enum in if stmnt
-          #endif
       // next Run_State must be triggered by fps pin or red button
       break;
 
@@ -496,11 +474,6 @@ void loop()
       // to write a zero to the timer alarm will crash the program
       timerAlarmWrite(trigger_timer, trigger_timer_values[fps_change_count], true); 
       rgb_write(Green);
-          #if DEBUG
-          Serial.println("Resuming");
-          paused_printed = false;
-          paused_flag = false;
-          #endif
       Run_State = Running;
       break;
 
@@ -591,35 +564,33 @@ void loop()
   // (above) are always run in each loop (if necessary). That means data is 
   // always fetched and sent before a change to a new state takes effect.
 
-  // TODO: Add checks to drop adc data if reaching limits or notify of misses
-  //       Dropping could be done by changing the interrupt loop counters
-
-  // If adc data is available fetch it and send over serial,
   // TODO: Currently the interrupt on ADC_BUSY is missing the falling edge,
   // so a backup check has been implemented and ensuing functions duplicated
+
+  // If adc data is available fetch it and send over serial
   if (adc_data_ready)
   {
     adc_data_ready = false;
     adc_fetch_data();
-    adc_map_volts();  // This added in for convenience; TODO: move
+    adc_map_volts();  // Calculate equivalent adc input voltages
     data_delta--;  // decriment before send means value should be zero
     print_csv_data();
     // Pulling CONVST low will allow triggering of next sample
     // Can be done in isr, after spi fetch or after serial send (safest)
     digitalWrite(ADC_CONVST, LOW);
   } 
+  // Test to see if the stupid interrupt has missed the falling edge
   else if (digitalRead(ADC_CONVST) && !digitalRead(ADC_BUSY))
   {
     adc_data_ready = false;
     adc_fetch_data();
-    adc_map_volts();  // This added in for convenience; TODO: move
+    adc_map_volts();  // Calculate equivalent adc input voltages
     data_delta--;  // decriment before send means value should be zero
     print_csv_data();
-    // the stupid interrupt has missed the falling edge
-    missed_interrupts++;
     // Pulling CONVST low will allow triggering of next sample
     // Can be done in isr, after spi fetch or after serial send (safest)
     digitalWrite(ADC_CONVST, LOW);
+    missed_interrupts++;  // increment the missed interrupt counter
   } 
 
 } // end of loop()
@@ -662,7 +633,6 @@ void loop()
   // ADC_BUSY pin high during conversion. Data ready to fetch on falling edge
   void ARDUINO_ISR_ATTR adc_data_ready_ISR(void)
   {
-    //adc.data_ready = true;  //  TODO
     adc_data_ready = true;
     // pulling CONVST low will allow triggering of next sample
     // Can be done in isr, after spi fetch or after serial send (safest)
@@ -697,6 +667,22 @@ void loop()
   }
 
 // OTHER FUNCTIONS -----------------------------------------------------------|
+/* pullup_pins():
+ * Set each unused pin to input pullup mode (force unconnected state to high)
+ * Put unused pins into unusedPins[] array in globals section
+ * On the Arduino esp32-S3:
+ *   Digital pins are D2-D13 (2-13)
+ *   Analog pins are A0-A7 (17-24)
+ *   SPI:  CS/CIPO/COPI/SCK = D10/D11/D12/D13
+ *   D0 & D1 are used for USART TX & RX (Serial)
+ *   D14-D16 are used for the RGB LED
+ */
+void pullup_pins(int *pinArray, int pinArraySize) {
+  for (int i = 0; i<pinArraySize; i++)
+  {
+    pinMode(pinArray[i], INPUT_PULLUP);
+  }
+}
 
 /* state_prediction():
  * This function works out the state transitions during the test
@@ -889,19 +875,6 @@ void adc_map_volts(void)
 }
 
 
-
-#if 0
-// Setup trigger timer
-void trigger_timer_setup(void)
-{
-  trigger_timer = timerBegin(0, 80, true);  // divider 80 gives 1MHz (microsec)
-  // Note: in future release this may change to timerBegin(uint32_t frequency)
-  timerAttachInterrupt(trigger_timer, &trigger_timer_ISR, true);
-  timerAlarmWrite(trigger_timer, default_trigger_interval, true); 
-  timerAlarmEnable(trigger_timer);
-}  // end of trigger_timer_setup
-#endif
-
 // Setup RGB LEDs
 void rgb_setup(void)
 {
@@ -945,25 +918,6 @@ void rgb_write(colour_enum Colour)
   digitalWrite(LED_BLUE, !(Colour & 0b0100));
 }
 
-// Setup serial
-void serial_setup(bool driver_reset_delay)
-{
-  /*  Serial Buffer:
-63 Bytes fills a new line up to here:                          |
-63 Bytes (Chars) fills an new/empty line up to here:           |
-63 Bytes (chars) are available without blocking serial writes!  // returned
-Don't forget the newline characters at the end of a line!
- */
-  // end of info section
-  if (driver_reset_delay == true)
-  {
-    delay(3000u);  // allow time for usb driver to reset
-  }
-  Serial.begin(SERIAL_BAUD);
-  Serial.println("Hello World!");
-  // Serial.print(Serial.availableForWrite());
-  // Serial.println(" Bytes (chars) are available without blocking serial writes!");
-} // end serial_setup()
 
 // Setup ADC and SPI
 void adc_setup(void)
@@ -1012,88 +966,6 @@ void adc_setup(void)
   delayMicroseconds(10u);  // wait min of 25ns before conversion start
 } // end of adc_setup()
 
-// Print variable values to serial
-void adc_print_values(void)
-{
-  // serial print causes the most slowdown;
-  // removing this changes rate from 611 SPS to 13.5 kSPS (in nano every)
-  Serial.println("ADC Readings: ");
-  Serial.print(adc.ch1);
-  Serial.print(",\tmV:");
-  Serial.println(map(adc.ch1, -32768, 32768, -10000, +10000));
-  Serial.print(adc.ch2);
-  Serial.print(",\tmV:");
-  Serial.println(map(adc.ch2, -32768, 32768, -10000, +10000));
-  Serial.print(adc.ch3);
-  Serial.print(",\tmV:");
-  Serial.println(map(adc.ch3, -32768, 32768, -10000, +10000));
-  Serial.print(adc.ch4);
-  Serial.print(",\tmV:");
-  Serial.println(map(adc.ch4, -32768, 32768, -10000, +10000));
-  // Serial.println();
-} // end adc_print_values()
-
-// write binary values to serial
-void adc_write_values(void)
-{
-  // serial print causes the most slowdown; using write instead
-  // removing this changes rate from 611 SPS to 13.5 kSPS (in nano every)
-  // Serial.write("ADC Readings: ");
-  // Serial.write("\n");
-  Serial.write(adc.ch1);
-  // Serial.write(",\tmV:");
-  // Serial.write(map(adc.ch1, -32768, 32768, -10000, +10000));
-  // Serial.write("\n");
-  Serial.write(adc.ch2);
-  // Serial.write(",\tmV:");
-  // Serial.write(map(adc.ch2, -32768, 32768, -10000, +10000));
-  // Serial.write("\n");
-  Serial.write(adc.ch3);
-  // Serial.write(",\tmV:");
-  // Serial.write(map(adc.ch3, -32768, 32768, -10000, +10000));
-  // Serial.write("\n");
-  Serial.write(adc.ch4);
-  //Serial.write(",\tmV:");
-  //Serial.write(map(adc.ch4, -32768, 32768, -10000, +10000));
-  Serial.write("\n");
-} // end adc_write_values()
-
-// Print delay to serial
-void printed_delay(void)
-{
-  // This function runs a 5 sec delay and prints to the serial monitor
-  Serial.println("Start delay");
-  Serial.print("5");
-  delay(1000u);
-  Serial.print("4");
-  delay(1000u);
-  Serial.print("3");
-  delay(1000u);
-  Serial.print("2");
-  delay(1000u);
-  Serial.println("1");
-  delay(1000u);
-  Serial.println("End delay");
-} // end printed_delay()
-
-// ADC capture values
-// TODO: Move to interrupt. This form causes lockup during while + delay loop
-void adc_capture(void)
-{
-  // Start adc conversion
-  digitalWrite(ADC_CONVST, HIGH);
-  // tConv = pulseIn(ADC_BUSY, HIGH, 200);  // this seems to miss start of pulse
-  // Serial.print("ADC Busy [us]: ");
-  // Serial.println(tConv);
-  // if adc is still busy converting, wait for new data
-  // (old data in register when busy=high)
-  while (digitalRead(ADC_BUSY) == HIGH)
-  {
-    delayMicroseconds(2u);  // conversion takes 2-191 us
-  }                       // delay
-  digitalWrite(ADC_CONVST, LOW);
-  adc_data_ready = true;
-} // end adc_capture()
 
 // Transfer adc data
 void adc_fetch_data(void)
@@ -1101,80 +973,19 @@ void adc_fetch_data(void)
   SPI.beginTransaction(SPISettings(SPI_BAUD, MSBFIRST, SPI_MODE2));  // TODO: RETURN VALUES; CHANGED FROM (20000000, MSBFIRST, SPI_MODE2)
   digitalWrite(SS, LOW);
   adc.ch1 = SPI.transfer16(0xFFFF);  // 0b1111'1111'1111'1111 or -1 (signed)
-  // digitalWrite(SS, HIGH);  // TODO: does SS H,L framing improve reliability?
-  // delayMicroseconds(1u);
-  // digitalWrite(SS, LOW);
   adc.ch2 = SPI.transfer16(0xFFFF);
-  // digitalWrite(SS, HIGH);  // TODO
-  // delayMicroseconds(1u);
-  // digitalWrite(SS, LOW);
   adc.ch3 = SPI.transfer16(0xFFFF);
-  // digitalWrite(SS, HIGH);  // TODO
-  // delayMicroseconds(1u);
-  // digitalWrite(SS, LOW);  
   adc.ch4 = SPI.transfer16(0xFFFF);
   digitalWrite(SS, HIGH);
   SPI.endTransaction();  // this doesn't slow things down much
-  //adc.data_ready = false; // TODO Currently lowered in loop
-  //adc.data_retrieved = true;  // TODO Remove as not used
+  //adc_data_ready = false; // flag is currently lowered in main loop
 } // end adc_fetch_data()
-
-void adc_reset_values(void)
-{
-  adc.ch1 = -32768;
-  adc.ch2 = -32768;
-  adc.ch3 = -32768;
-  adc.ch4 = -32768;
-  //adc.data_ready = 0;  // adc conversion completed and data waiting
-  //adc.data_retrieved = 0;  TODO
-  //adc.data_sent = 0;  // adc data transmitted over serial
-} // end adc_reset_values()
-
-void adc_test_loop(void)
-{
-  const unsigned long iterations = 100;
-  const unsigned int pulseLength = 100;
-  const unsigned int channelDelay = 1000;
-  const unsigned int loopDelay = 0;
-  unsigned long startTime = micros();  // for benchmarking of the for loop
-
-  for (unsigned long i = 0; i < iterations; i++)
-  {
-    while (!timer_flag)
-    {
-      // do nothing
-    }
-    while (timer_flag)
-    {
-      adc_capture();  // ADC capture values
-      adc_fetch_data();
-      adc_print_values();
-      adc_reset_values();
-      timer_flag = false;
-      // delay(loopDelay);
-    } // end while loop
-
-  } // end of for() loop
-  // benchmark the for loop
-  unsigned long endTime = micros();
-  String printString = String(iterations) + " iterations took " + String(endTime - startTime) + " uSec (" + String(float(1000000) * float(iterations) / float(endTime - startTime)) + " SPS)";
-  Serial.println(printString);  // sligtly faster in one step
-  // Shutdown and idle
-  SPI.end();  // shutdown spi
-  while (1)
-  {
-    delay(10000u);
-  } // loop infinitly without doing anything
-} // end of adc_test_loop()
 
 
 // Loop and wait for config settings over serial
 void wait_for_serial_config(void)
 {
-  // TODO: Default list not loaded properly. Only the first value added
   // TODO: Clean up and add comments.
-  // TODO: Note that index can overrun timing array bounds
-  // TODO: serRead is a String classs instance of undefined size
   Serial.println("CHOOSE AN OPTION:");
   Serial.println("* Enter a list of timing values in ms.");
   Serial.println("  Comma separated; No spaces; Max 24 items; Min value 30 ms.");
@@ -1186,7 +997,8 @@ void wait_for_serial_config(void)
   char array[250];
   char *strings[250];  // an array of pointers to the pieces of the above array after strtok()
   char *ptr = NULL;
-  String serRead = "";  // TODO: here empty but when assigned can be any size
+  // Note: serRead is a String classs instance of undefined size
+  String serRead = "";  // here empty but when assigned can be any size
   String convertTemp;
   uint64_t uintTemp;  
   bool timingDataRecieved = false;
@@ -1204,10 +1016,10 @@ void wait_for_serial_config(void)
   // Wait for timing values from serial
   while (timingDataRecieved == false)
   {
-    // First giving a way to break out and do calibration cycle
+    // Give a way to break out of loop and use default or do calibration cycle
     if (white_button.activated || red_button.activated)
     {
-      timingDataRecieved = true;  // hasn't really but need to break out loop
+      timingDataRecieved = true;  // hasn't really, but need to break out loop
       // lowering button flags and run state change handled in switch case
       timer_elements_set = DEFAULT_TIMER_ELEMENTS;  // or max array size
       index = DEFAULT_TIMER_ELEMENTS; // this just to print values
@@ -1219,15 +1031,16 @@ void wait_for_serial_config(void)
           Serial.print(n);
           Serial.print("  ");
           Serial.println(timer_values_millis[n]);
-          delay(200u);
+          delay(200u);  // print delay for emphasis only
         }
       }
     }
     else if (Serial.available() > 0) // look for incoming serial data
     {
-      serRead = Serial.readStringUntil('\n');
-      serRead.toCharArray(array, 250);
-      ptr = strtok(array, ",");  // delimiter
+      serRead = Serial.readStringUntil('\n'); // read serial data to new line
+      serRead.toCharArray(array, 250); // convert to char array
+      // retun token/pointer to the given delimiter in the char array
+      ptr = strtok(array, ",");  // "," = delimiter
 
       while (ptr != NULL)
       {
@@ -1243,7 +1056,7 @@ void wait_for_serial_config(void)
         }
         timer_values_millis[index] = uintTemp;
         index++;
-        ptr = strtok(NULL, ",");
+        ptr = strtok(NULL, ",");  // find next token/pointer
       }
       if (notify)
       {
@@ -1307,168 +1120,7 @@ void run_calibration(void)
 } // End of run_calibration()
 
 
-/* my_funtion():
- * This function does ...
- */
-void my_function(void)
-{
-  while (0)
-  {
-    // do stuff
-  }
-} // end of my_function()
-
 // ---------------------------------------------------------------------------|
 // ---------------------------------------------------------------------------|
 // ---------------------------------------------------------------------------|
 // ---------------------------------------------------------------------------|
-
-/*
-// Idea courtesy Ganssle Group. Called from a 5ms timer,
-// the debounced state only ever changes when the pin
-// has been stable for 40ms. Initialize debounced_state
-// to whatever is  "inactive" for the system (HIGH or LOW)
-uint8_t DebouncePin(uint8_t pin) {
-  static uint8_t debounced_state = LOW;
-  static uint8_t state_history = 0;
-  state_history = state_history << 1 | digitalRead(pin);
-  if (state_history == 0xff) {
-    debounced_state = HIGH;
-  } else if (state_history == 0x00) {
-    debounced_state = LOW;
-  }
-  return debounced_state;
-} // end of DebouncePin()
-*/
-
-// Alternate styling:
-#if 0
-/*
-//====================================================================
-// EXTI2_3 EXTERNAL INTERRUPT HANDLER - EXTI2_3_IRQHandler()
-//====================================================================
-// DESCRIPTION: This function will be triggered by an interrupt on the
-//             associated lines. Must include clearing of pending bit
-//====================================================================
-void EXTI2_3_IRQHandler(void){
-    // Increment counter
-    switch_3_count++;
-
-    // Check value and adjust if necessary, then set on/off state accordingly
-    // Doing this in main is better, but much more complicated.
-    // Is probably short enough to get away with in this case
-    if (switch_3_count > 3) switch_3_count = 0;
-    switch (switch_3_count)
-    {
-        case 0:
-            do_nothing = 1;
-            break;
-        case 1:
-            do_nothing = 0;
-            break;
-        case 2:
-            do_nothing = 1;
-            break;
-        case 3:
-            do_nothing = 0;
-            break;
-        default:
-            break;
-    }
-
-    // Clear pending bit by writing 1 to it
-    EXTI->PR |= EXTI_PR_PR3;
-
-}   // END OF EXTI2_3_IRQHandler()
-*/
-#endif
-
-/*
-// Struck Wikipedia reminders:
-struct point {
-   int x;
-   int y;
-};
-struct point a_point = { .y = 2, .x = 1 };
-struct point my_point = { 3, 7 };
-struct point *p = &my_point;  // p is a pointer to my_point
-(*p).x = 8;                   // set the first member of the struct
-p->x = 8;                     // equivalent method to set the first member of the struct
-*/
-
-/*
-// THE BELOW VERSION WORKS
-// struct to hold adc data
-typedef struct {
-  int16_t ch1;
-  int16_t ch2;
-  int16_t ch3;
-  int16_t ch4;
-  bool data_ready;  // adc conversion completed and data waiting
-  bool data_retrieved;
-  bool data_sent;  // adc data transmitted over serial
-} dataBlock_t;
-volatile dataBlock_t adc = {
-  .ch1 = -32768,
-  .ch2 = -32768,
-  .ch3 = -32768,
-  .ch4 = -32768,
-  .data_ready = 0,  // adc conversion completed and data waiting
-  .data_retrieved = 0,
-  .data_sent = 0,  // adc data transmitted over serial
-};
-volatile dataBlock_t *adcPointer = &adc;
-*/
-
-/*
-
-
-// Description:
-// The String reserve() function allows you to allocate a buffer in memory for manipulating Strings.
-// Syntax:
-// myString.reserve(size)
-// Parameters:
-// myString: a variable of type String.
-// size: the number of bytes in memory to save for String manipulation. Allowed data types: unsigned int.
-
-
-// BACKUP OF MOSTLY WORKING CODE TO SELECT NEXT RUN STATE ON THE FLY
-// DEPRECIATED IN FAVOUR OF PRE-CALCULATING THE STATES BEFORE STARTING TEST
-
-    if (fps_change_count >= TIMER_ELEMENTS_MAX)
-    {
-      Run_State = Stopping;
-    }
-    else if (fps_change_count >= timer_elements_set)
-    {
-      Run_State = Stopping;
-    }
-    else if (trigger_timer_values[fps_change_count] == 0)
-    {
-      Run_State = Pausing;
-    }
-    else if ( Run_State == 6 ) // putting enum name here won't work
-    {
-      Run_State = Resuming;
-      paused_flag = false;
-    }    
-    else if (paused_flag) // just putting Run_State == Paused not working,  neither does casting to int or !(Run_State ^ Paused)
-    {
-      Run_State = Resuming;
-      paused_flag = false;
-    }
-    else
-    {
-      timerAlarmWrite(trigger_timer, trigger_timer_values[fps_change_count], true);
-      Run_State = Running;
-    }
-
-
-
-
-
-
-
-
-
-*/
